@@ -143,6 +143,10 @@ export async function streamClaudeCodeCli(
   let unlistenData: UnlistenFn | undefined
   let unlistenDone: UnlistenFn | undefined
   let finished = false
+  let resolveFinished: () => void = () => {}
+  const finishedPromise = new Promise<void>((resolve) => {
+    resolveFinished = resolve
+  })
 
   // Diagnostic capture for failure paths. The Rust side emits every
   // stdout line; lines the parser doesn't recognize (non-JSON,
@@ -173,6 +177,7 @@ export async function streamClaudeCodeCli(
     finished = true
     cleanup()
     cb()
+    resolveFinished()
   }
 
   const abortListener = () => {
@@ -222,6 +227,7 @@ export async function streamClaudeCodeCli(
       messages,
     }
     await invoke("claude_cli_spawn", payload)
+    await finishedPromise
   } catch (err) {
     finishWith(() => {
       const message = err instanceof Error ? err.message : String(err)

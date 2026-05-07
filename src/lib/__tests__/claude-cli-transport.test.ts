@@ -1,8 +1,35 @@
-import { describe, it, expect } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+
+const tauriMocks = vi.hoisted(() => {
+  return {
+    invoke: vi.fn(async () => undefined),
+    listeners: new Map<string, (event: { payload: unknown }) => void>(),
+    unlisten: vi.fn(),
+  }
+})
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: tauriMocks.invoke,
+}))
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (topic: string, cb: (event: { payload: unknown }) => void) => {
+    tauriMocks.listeners.set(topic, cb)
+    return tauriMocks.unlisten
+  }),
+}))
+
 import {
   createClaudeCodeStreamParser,
   buildExitError,
+  streamClaudeCodeCli,
 } from "../claude-cli-transport"
+
+beforeEach(() => {
+  tauriMocks.invoke.mockClear()
+  tauriMocks.unlisten.mockClear()
+  tauriMocks.listeners.clear()
+})
 
 describe("createClaudeCodeStreamParser", () => {
   it("emits text from a single stream_event text_delta", () => {
@@ -121,6 +148,56 @@ describe("createClaudeCodeStreamParser", () => {
         }),
       ),
     ).toBeNull()
+  })
+})
+
+describe("streamClaudeCodeCli", () => {
+  it("keeps the returned promise pending until the claude CLI done event fires", async () => {
+    const tokens: string[] = []
+    const errors: Error[] = []
+    let doneCount = 0
+
+    const promise = streamClaudeCodeCli(
+      { provider: "claude-code", model: "claude-opus-4-6" } as never,
+      [{ role: "user", content: "hello" }],
+      {
+        onToken: (token) => tokens.push(token),
+        onDone: () => { doneCount += 1 },
+        onError: (error) => { errors.push(error) },
+      },
+    )
+
+    await vi.waitFor(() => expect(tauriMocks.invoke).toHaveBeenCalledWith(
+      "claude_cli_spawn",
+      expect.objectContaining({ model: "claude-opus-4-6" }),
+    ))
+
+    let settled = false
+    promise.then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    const dataTopic = [...tauriMocks.listeners.keys()].find((topic) => {
+      return topic.startsWith("claude-cli:") && !topic.endsWith(":done")
+    })
+    expect(dataTopic).toBeTruthy()
+    const doneTopic = `${dataTopic}:done`
+
+    tauriMocks.listeners.get(dataTopic!)?.({
+      payload: JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "generated text" }] },
+      }),
+    })
+    expect(tokens).toEqual(["generated text"])
+    expect(settled).toBe(false)
+
+    tauriMocks.listeners.get(doneTopic)?.({ payload: { code: 0, stderr: "" } })
+    await promise
+
+    expect(settled).toBe(true)
+    expect(doneCount).toBe(1)
+    expect(errors).toEqual([])
   })
 })
 
