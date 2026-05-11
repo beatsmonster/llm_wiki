@@ -34,10 +34,17 @@ fn set_proxy_env(config: proxy::ProxyConfig) -> String {
 pub fn run() {
     clip_server::start_clip_server();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_store::Builder::default().build());
+
+    #[cfg(debug_assertions)]
+    {
+        builder = builder.plugin(tauri_plugin_webdriver::init());
+    }
+
+    builder
         // Rust-backed fetch so third-party LLM APIs that reject
         // browser-origin headers via CORS preflight (MiniMax, Volcengine
         // Ark's api/coding/v3, etc.) still work. Requests leave the app
